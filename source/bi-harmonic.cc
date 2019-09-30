@@ -538,11 +538,9 @@ main(int argc, char *argv[])
 
       // Create a plate
       std::vector<unsigned int> subdivisions(1);
-      unsigned int              degree       = 0;
-      bool                      p_refinement = false;
-      bool                      h_refinement = true;
-      bool                      k_refinement = false;
-      unsigned int              n_cycle      = 6;
+      unsigned int              degree          = 2;
+      std::string               refinement_type = "h";
+      unsigned int              n_cycle         = 7;
 
       ParameterHandler prm;
 
@@ -551,9 +549,7 @@ main(int argc, char *argv[])
 
       prm.enter_subsection("Global parameters");
       prm.add_parameter("Number of cycles", n_cycle);
-      prm.add_parameter("Refinement: p", p_refinement);
-      prm.add_parameter("Refinement: h", h_refinement);
-      prm.add_parameter("Refinement: k", k_refinement);
+      prm.add_parameter("Degree", degree, "", Patterns::Integer(2));
       prm.leave_subsection();
 
       prm.enter_subsection("Error");
@@ -562,23 +558,7 @@ main(int argc, char *argv[])
 
       for (unsigned int cycle = 1; cycle < n_cycle; ++cycle)
         {
-          if (h_refinement)
-            {
-              subdivisions[0] = Utilities::pow(2, cycle);
-              degree          = 2;
-            }
-
-          if (p_refinement)
-            {
-              subdivisions[0] = 100;
-              degree          = cycle;
-            }
-
-          if (k_refinement)
-            {
-              subdivisions[0] = 100;
-              degree          = 4;
-            }
+          subdivisions[0] = Utilities::pow(2, cycle);
 
           std::vector<std::vector<double>> knots(
             1, std::vector<double>(subdivisions[0] + 1));
@@ -589,33 +569,11 @@ main(int argc, char *argv[])
           std::vector<std::vector<unsigned int>> mults(
             1, std::vector<unsigned int>(subdivisions[0] + 1, 1));
 
-          // C^0 continuity
-          // {
-          //   for (unsigned int i=0; i<subdivisions[0]; ++i)
-          //     mults[0][i] = degree;
-          // }
-
-          // C^1 continuity
-          // {
-          //   for (unsigned int i = 0; i < subdivisions[0]; ++i)
-          //     mults[0][i] = degree - 1;
-          // }
-
           // maximum continuity
           {
             for (unsigned int i = 0; i < subdivisions[0]; ++i)
               mults[0][i] = 1;
           }
-
-          // C^2 continuity
-          // {
-          // for (unsigned int i=0; i<subdivisions[0]; ++i)
-          //   mults[0][i] = degree-2;
-          // }
-
-          if (k_refinement)
-            for (unsigned int i = 0; i < subdivisions[0]; ++i)
-              mults[0][i] = cycle + 1;
 
           // open knot vectors
           mults[0][0]               = degree + 1;
@@ -626,7 +584,6 @@ main(int argc, char *argv[])
 
           BiLaplacian<2> bilaplacian(knots, mults, degree, convergence_table);
           bilaplacian.add_parameters(prm);
-
 
           ParameterAcceptor::initialize("parameters.prm",
                                         "used_parameters.prm",
