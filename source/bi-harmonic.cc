@@ -39,7 +39,7 @@
 #include <deal.II/grid/tria_accessor.h>
 #include <deal.II/grid/tria_iterator.h>
 
-#include <deal.II/lac/constraint_matrix.h>
+#include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/precondition.h>
@@ -61,274 +61,315 @@
 
 #include "grid_generator.h"
 #include "iga_handler.h"
+#include "test_cases.h"
+
+using namespace dealii;
+using dealii::numbers::PI;
 
 
-namespace Step41
+template <int dim>
+class BiLaplacian
 {
-  using namespace dealii;
-  using dealii::numbers::PI;
+public:
+  BiLaplacian(const std::vector<std::vector<double>> &      knots,
+              const std::vector<std::vector<unsigned int>> &mults,
+              const unsigned int                            degree,
+              ParsedConvergenceTable &                      convergence_table);
 
-  template <int dim>
-  class Solution : public Function<dim>
-  {
-  public:
-    Solution()
-      : Function<dim>()
-    {}
-    virtual double
-    value(const Point<dim> &p, const unsigned int component = 0) const;
-    virtual Tensor<1, dim>
-    gradient(const Point<dim> &p, const unsigned int component = 0) const;
-    virtual void
-    hessian_list(const std::vector<Point<dim>> &       points,
-                 std::vector<SymmetricTensor<2, dim>> &hessians,
-                 const unsigned int                    component = 0) const;
-  };
-
-  template <int dim>
-  double
-  Solution<dim>::value(const Point<dim> &p, const unsigned int) const
-  {
-    return std::sin(PI * p(0)) * std::sin(PI * p(0)) * std::sin(PI * p(1)) *
-           std::sin(PI * p(1));
-  }
-
-  template <int dim>
-  Tensor<1, dim>
-  Solution<dim>::gradient(const Point<dim> &p, const unsigned int) const
-  {
-    Tensor<1, dim> return_value;
-
-    return_value[0] = 2 * PI * std::cos(PI * p(0)) * std::sin(PI * p(0)) *
-                      std::sin(PI * p(1)) * std::sin(PI * p(1));
-    return_value[1] = 2 * PI * std::cos(PI * p(1)) * std::sin(PI * p(0)) *
-                      std::sin(PI * p(0)) * std::sin(PI * p(1));
-    return return_value;
-  }
-
-  template <int dim>
   void
-  Solution<dim>::hessian_list(const std::vector<Point<dim>> &       points,
-                              std::vector<SymmetricTensor<2, dim>> &hessians,
-                              const unsigned int) const
-  {
-    Tensor<1, dim> p;
-    for (unsigned i = 0; i < points.size(); ++i)
-      {
-        for (unsigned int d = 0; d < dim; ++d)
-          {
-            p[d] = points[i][d];
-          } // d-loop
-        for (unsigned int d = 0; d < dim; ++d)
-          {
-            hessians[i][d][d] =
-              2 * PI * PI * std::cos(PI * p[d]) * std::cos(PI * p[d]) *
-                std::sin(PI * p[(d + 1) % dim]) *
-                std::sin(PI * p[(d + 1) % dim]) -
-              2 * PI * PI * std::sin(PI * p[d]) * std::sin(PI * p[d]) *
-                std::sin(PI * p[(d + 1) % dim]) *
-                std::sin(PI * p[(d + 1) % dim]);
-            hessians[i][d][(d + 1) % dim] = 4 * PI * PI * std::cos(PI * p[d]) *
-                                            std::cos(PI * p[(d + 1) % dim]) *
-                                            std::sin(PI * p[d]) *
-                                            std::sin(PI * p[(d + 1) % dim]);
-            hessians[i][(d + 1) % dim][d] = hessians[i][d][(d + 1) % dim];
-          }
-      }
-  }
-  template <int dim>
-  class RightHandSide : public Function<dim>
-  {
-  public:
-    RightHandSide()
-      : Function<dim>()
-    {}
+  run(unsigned int cycle);
 
-    virtual double
-    value(const Point<dim> &p, const unsigned int component = 0) const;
-  };
-
-  template <int dim>
-  double
-  RightHandSide<dim>::value(const Point<dim> & p,
-                            const unsigned int component) const
+  void
+  add_parameters(ParameterHandler &prm)
   {
-    Assert(component == 0, ExcNotImplemented());
-
-    return (8 * std::pow(PI, 4) *
-            (8 * std::sin(PI * p(0)) * std::sin(PI * p(0)) *
-               std::sin(PI * p(1)) * std::sin(PI * p(1)) -
-             3 * std::sin(PI * p(0)) * std::sin(PI * p(0)) -
-             3 * std::sin(PI * p(1)) * std::sin(PI * p(1)) + 1));
+    prm.enter_subsection("Solver");
+    prm.add_parameter("Max iterations", max_iter);
+    prm.add_parameter("Tolerance", tolerance);
+    prm.add_parameter("Reduction", reduction);
+    prm.leave_subsection();
   }
 
+private:
+  void
+  make_grid();
+  void
+  setup_system();
+  void
+  assemble_system();
+  void
+  solve();
+  void
+  output_results(const unsigned int iteration);
+  void
+  compute_error(const unsigned int cycle);
 
-  template <int dim>
-  class BiLaplacian
-  {
-  public:
-    BiLaplacian(const std::vector<std::vector<double>> &      knots,
-                const std::vector<std::vector<unsigned int>> &mults,
-                const unsigned int                            degree,
-                ParsedConvergenceTable &convergence_table);
+  IgaHandler<dim, dim> iga_handler;
 
-    void
-    run(unsigned int cycle);
+  unsigned int degree;
 
-    void
-    add_parameters(ParameterHandler &prm)
+  unsigned int max_iter  = 10000;
+  double       tolerance = 1e-12;
+  double       reduction = 1e-12;
+
+  Triangulation<dim> &triangulation;
+  FE_Bernstein<dim> & fe;
+  DoFHandler<dim> &   dof_handler;
+
+  MappingFEField<dim> &mappingfe;
+
+  AffineConstraints<double> bspline_constraints;
+
+  SparseMatrix<double> bspline_system_matrix;
+
+  Vector<double> bspline_solution;
+  Vector<double> bspline_system_rhs;
+
+  SparsityPattern sparsity_bspline;
+
+  TrilinosWrappers::PreconditionAMG precondition;
+
+  ParsedConvergenceTable &convergence_table;
+};
+
+
+
+template <int dim>
+BiLaplacian<dim>::BiLaplacian(
+  const std::vector<std::vector<double>> &      knots,
+  const std::vector<std::vector<unsigned int>> &mults,
+  const unsigned int                            degree,
+  ParsedConvergenceTable &                      convergence_table)
+  : iga_handler(knots, mults, degree)
+  , degree(degree)
+  , triangulation(iga_handler.tria)
+  , fe(iga_handler.fe)
+  , dof_handler(iga_handler.dh)
+  , mappingfe(*iga_handler.map_fe)
+  , convergence_table(convergence_table)
+{}
+
+template <int dim>
+void
+BiLaplacian<dim>::make_grid()
+{
+  std::cout << std::endl
+            << "Degree: " << degree << std::endl
+            << "Number of active cells: " << triangulation.n_active_cells()
+            << std::endl
+            << "Total number of cells: " << triangulation.n_cells()
+            << std::endl;
+}
+
+
+template <int dim>
+void
+BiLaplacian<dim>::setup_system()
+{
+  dof_handler.distribute_dofs(fe);
+
+  std::cout << "Number of degrees of freedom: " << dof_handler.n_dofs()
+            << std::endl
+            << "Number of degrees of freedom IGA: " << iga_handler.n_bspline
+            << std::endl
+            << std::endl;
+
+  DynamicSparsityPattern bspline_sp(iga_handler.n_bspline);
+  iga_handler.make_sparsity_pattern(bspline_sp);
+
+  sparsity_bspline.copy_from(bspline_sp);
+  bspline_system_matrix.reinit(sparsity_bspline);
+
+  bspline_solution.reinit(iga_handler.n_bspline);
+  bspline_system_rhs.reinit(iga_handler.n_bspline);
+
+  // Boundary values
+  QGauss<dim - 1> boundary_quad(fe.degree + 2);
+
+  std::map<types::global_dof_index, double> boundary_values;
+
+  // FunctionParser<dim> boundary_funct(boundary_values_expression);
+  Solution<dim> boundary_funct;
+
+  std::map<types::boundary_id, const Function<dim> *> functions;
+  functions[0] = &boundary_funct;
+
+  iga_handler.project_boundary_values(functions,
+                                      boundary_quad,
+                                      bspline_constraints);
+
+  std::vector<unsigned int> dofs(dim);
+  for (unsigned int i = 0; i < dim; ++i)
     {
-      prm.enter_subsection("Functions");
-      prm.add_parameter("Boundary conditions", boundary_values_expression);
-      prm.add_parameter("Exact solution", exact_solution_expression);
-      prm.add_parameter("Forcing term", forcing_term_expression);
-      prm.leave_subsection();
+      dofs[i] =
+        n_dofs({iga_handler.knot_vectors[i]}, {iga_handler.mults[i]}, degree);
     }
 
-  private:
-    void
-    make_grid();
-    void
-    setup_system();
-    void
-    assemble_system();
-    void
-    solve();
-    void
-    output_results(const unsigned int iteration);
-    void
-    compute_error(const unsigned int cycle);
+  for (unsigned int i = 0; i < iga_handler.n_bspline; ++i)
+    {
+      // Second and second to last dof along x
+      if (i % dofs[0] == 1 || i % dofs[0] == (dofs[0] - 2))
+        bspline_constraints.add_line(i);
 
-    IgaHandler<dim, dim> iga_handler;
-
-    unsigned int degree;
-    unsigned int cg_iter;
-
-    std::string boundary_values_expression = "0";
-    std::string exact_solution_expression  = "0";
-    std::string forcing_term_expression    = "1";
-
-    Triangulation<dim> &triangulation;
-    FE_Bernstein<dim> & fe;
-    DoFHandler<dim> &   dof_handler;
-
-    MappingFEField<dim> &mappingfe;
-
-    AffineConstraints<double> bspline_constraints;
-
-    SparseMatrix<double> bspline_system_matrix;
-
-    Vector<double> bspline_solution;
-    Vector<double> bspline_system_rhs;
-
-    SparsityPattern sparsity_bspline;
-
-    TrilinosWrappers::PreconditionAMG precondition;
-
-    ParsedConvergenceTable &convergence_table;
-  };
+      // Second and second to last dof along y
+      if ((i / dofs[0]) % dofs[1] == 1 ||
+          (i / dofs[0]) % dofs[1] == (dofs[1] - 2))
+        bspline_constraints.add_line(i);
+    }
+  bspline_constraints.close();
+}
 
 
 
-  template <int dim>
-  BiLaplacian<dim>::BiLaplacian(
-    const std::vector<std::vector<double>> &      knots,
-    const std::vector<std::vector<unsigned int>> &mults,
-    const unsigned int                            degree,
-    ParsedConvergenceTable &                      convergence_table)
-    : iga_handler(knots, mults, degree)
-    , degree(degree)
-    , triangulation(iga_handler.tria)
-    , fe(iga_handler.fe)
-    , dof_handler(iga_handler.dh)
-    , mappingfe(*iga_handler.map_fe)
-    , convergence_table(convergence_table)
-  {}
+template <int dim>
+void
+BiLaplacian<dim>::assemble_system()
+{
+  std::cout << "   Assembling system..." << std::endl;
 
-  template <int dim>
-  void
-  BiLaplacian<dim>::make_grid()
-  {
-    std::cout << std::endl
-              << "Degree: " << degree << std::endl
-              << "Number of active cells: " << triangulation.n_active_cells()
-              << std::endl
-              << "Total number of cells: " << triangulation.n_cells()
-              << std::endl;
-  }
+  bspline_system_matrix = 0;
+  bspline_system_rhs    = 0;
 
+  const QGauss<dim> quadrature_formula(fe.degree + 1);
+  // FunctionParser<dim> right_hand_side(forcing_term_expression);
+  RightHandSide<dim> right_hand_side;
 
-  template <int dim>
-  void
-  BiLaplacian<dim>::setup_system()
-  {
-    dof_handler.distribute_dofs(fe);
+  FEValues<dim> fe_values( // mappingfe,
+    fe,
+    quadrature_formula,
+    update_values | update_hessians | update_quadrature_points |
+      update_JxW_values);
 
-    std::cout << "Number of degrees of freedom: " << dof_handler.n_dofs()
-              << std::endl
-              << "Number of degrees of freedom IGA: " << iga_handler.n_bspline
-              << std::endl
-              << std::endl;
+  FEValuesExtractors::Scalar scalar(0);
 
-    DynamicSparsityPattern bspline_sp(iga_handler.n_bspline);
-    iga_handler.make_sparsity_pattern(bspline_sp);
+  const unsigned int dofs_per_cell = fe.dofs_per_cell;
+  const unsigned int n_q_points    = quadrature_formula.size();
 
-    sparsity_bspline.copy_from(bspline_sp);
-    bspline_system_matrix.reinit(sparsity_bspline);
+  FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
+  Vector<double>     cell_rhs(dofs_per_cell);
 
-    bspline_solution.reinit(iga_handler.n_bspline);
-    bspline_system_rhs.reinit(iga_handler.n_bspline);
+  std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-    // Boundary values
-    QGauss<dim - 1> boundary_quad(fe.degree + 2);
+  typename DoFHandler<dim>::active_cell_iterator cell =
+                                                   dof_handler.begin_active(),
+                                                 endc = dof_handler.end();
 
-    std::map<types::global_dof_index, double> boundary_values;
+  for (; cell != endc; ++cell)
+    {
+      fe_values.reinit(cell);
+      cell_matrix = 0;
+      cell_rhs    = 0;
 
-    // FunctionParser<dim> boundary_funct(boundary_values_expression);
-    Solution<dim> boundary_funct;
+      for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
+        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+          {
+            const auto delta_phi_i =
+              trace(fe_values[scalar].hessian(i, q_point));
+            for (unsigned int j = 0; j < dofs_per_cell; ++j)
+              {
+                const auto delta_phi_j =
+                  trace(fe_values[scalar].hessian(j, q_point));
+                cell_matrix(i, j) +=
+                  (delta_phi_j * delta_phi_i * fe_values.JxW(q_point));
+              }
 
-    std::map<types::boundary_id, const Function<dim> *> functions;
-    functions[0] = &boundary_funct;
+            cell_rhs(i) +=
+              (fe_values.shape_value(i, q_point) *
+               right_hand_side.value(fe_values.quadrature_point(q_point)) *
+               fe_values.JxW(q_point));
+          }
 
-    iga_handler.project_boundary_values(functions,
-                                        boundary_quad,
-                                        bspline_constraints);
-
-    std::vector<unsigned int> dofs(dim);
-    for (unsigned int i = 0; i < dim; ++i)
-      {
-        dofs[i] =
-          n_dofs({iga_handler.knot_vectors[i]}, {iga_handler.mults[i]}, degree);
-      }
-
-    for (unsigned int i = 0; i < iga_handler.n_bspline; ++i)
-      {
-        // Second and second to last dof along x
-        if (i % dofs[0] == 1 || i % dofs[0] == (dofs[0] - 2))
-          bspline_constraints.add_line(i);
-
-        // Second and second to last dof along y
-        if ((i / dofs[0]) % dofs[1] == 1 ||
-            (i / dofs[0]) % dofs[1] == (dofs[1] - 2))
-          bspline_constraints.add_line(i);
-      }
-    bspline_constraints.close();
-  }
+      iga_handler.distribute_local_to_global(cell_matrix,
+                                             cell_rhs,
+                                             cell,
+                                             bspline_system_matrix,
+                                             bspline_system_rhs,
+                                             bspline_constraints);
+    }
+}
 
 
+template <int dim>
+void
+BiLaplacian<dim>::solve()
+{
+  std::cout << "   Solving system..." << std::endl;
 
-  template <int dim>
-  void
-  BiLaplacian<dim>::assemble_system()
-  {
-    std::cout << "   Assembling system..." << std::endl;
+  ReductionControl         reduction_control(max_iter, tolerance, reduction);
+  SolverCG<Vector<double>> solver(reduction_control);
 
-    bspline_system_matrix = 0;
-    bspline_system_rhs    = 0;
+  precondition.initialize(bspline_system_matrix);
 
-    const QGauss<dim> quadrature_formula(fe.degree + 1);
-    // FunctionParser<dim> right_hand_side(forcing_term_expression);
-    RightHandSide<dim> right_hand_side;
+  solver.solve(bspline_system_matrix,
+               bspline_solution,
+               bspline_system_rhs,
+               precondition);
+  bspline_constraints.distribute(bspline_solution);
+
+  std::cout << "      Error: " << reduction_control.initial_value() << " -> "
+            << reduction_control.last_value() << " in "
+            << reduction_control.last_step() << " CG iterations." << std::endl;
+}
+
+
+
+template <int dim>
+void
+BiLaplacian<dim>::output_results(const unsigned int iteration)
+{
+  std::cout << "   Writing graphical output..." << std::endl;
+
+  DataOut<dim> data_out;
+
+  data_out.set_flags(
+    DataOutBase::VtkFlags(std::numeric_limits<double>::min(),
+                          iteration,
+                          true,
+                          DataOutBase::VtkFlags::best_compression,
+                          true));
+
+
+  data_out.attach_dof_handler(dof_handler);
+
+  Vector<double> bspline_sol_dh(dof_handler.n_dofs());
+
+  Vector<double> exact_dh(dof_handler.n_dofs());
+
+  iga_handler.transform_vector_into_fe_space(bspline_sol_dh, bspline_solution);
+  AffineConstraints<double> empty_constraints;
+  empty_constraints.close();
+  VectorTools::project(dof_handler,
+                       empty_constraints,
+                       QGauss<dim>(2 * degree + 1),
+                       Solution<dim>(),
+                       exact_dh);
+
+  data_out.add_data_vector(bspline_sol_dh, "u");
+  data_out.add_data_vector(exact_dh, "u_exact");
+
+  data_out.build_patches(degree);
+
+  std::ofstream output_vtu(
+    (std::string("output_") + Utilities::int_to_string(iteration, 3) + ".vtu")
+      .c_str());
+  data_out.write_vtu(output_vtu);
+}
+
+
+template <int dim>
+void
+BiLaplacian<dim>::compute_error(const unsigned int)
+{
+  std::cout << "   Computing error..." << std::endl;
+
+  Vector<double> bspline_sol_dh(dof_handler.n_dofs());
+  iga_handler.transform_vector_into_fe_space(bspline_sol_dh, bspline_solution);
+
+  // FunctionParser<dim> exact_solution(exact_solution_expression);
+  Solution<dim> exact_solution;
+
+  auto compute_H2_error = [&]() {
+    const QGauss<dim> quadrature_formula(2 * fe.degree + 1);
+    Vector<double>    error_per_cell(triangulation.n_active_cells());
 
     FEValues<dim> fe_values( // mappingfe,
       fe,
@@ -337,199 +378,54 @@ namespace Step41
         update_JxW_values);
 
     FEValuesExtractors::Scalar scalar(0);
+    const unsigned int         n_q_points = quadrature_formula.size();
 
-    const unsigned int dofs_per_cell = fe.dofs_per_cell;
-    const unsigned int n_q_points    = quadrature_formula.size();
-
-    FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
-    Vector<double>     cell_rhs(dofs_per_cell);
-
-    std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
-
-    typename DoFHandler<dim>::active_cell_iterator cell =
-                                                     dof_handler.begin_active(),
-                                                   endc = dof_handler.end();
-
-    for (; cell != endc; ++cell)
+    std::vector<SymmetricTensor<2, dim>> exact_hessians(n_q_points);
+    std::vector<Tensor<2, dim>>          hessians(n_q_points);
+    unsigned int                         id = 0;
+    for (auto cell : dof_handler.active_cell_iterators())
       {
         fe_values.reinit(cell);
-        cell_matrix = 0;
-        cell_rhs    = 0;
+        fe_values[scalar].get_function_hessians(bspline_sol_dh, hessians);
+        exact_solution.hessian_list(fe_values.get_quadrature_points(),
+                                    exact_hessians);
 
         for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
-          for (unsigned int i = 0; i < dofs_per_cell; ++i)
-            {
-              const auto delta_phi_i =
-                trace(fe_values[scalar].hessian(i, q_point));
-              for (unsigned int j = 0; j < dofs_per_cell; ++j)
-                {
-                  const auto delta_phi_j =
-                    trace(fe_values[scalar].hessian(j, q_point));
-                  cell_matrix(i, j) +=
-                    (delta_phi_j * delta_phi_i * fe_values.JxW(q_point));
-                }
-
-              cell_rhs(i) +=
-                (fe_values.shape_value(i, q_point) *
-                 right_hand_side.value(fe_values.quadrature_point(q_point)) *
-                 fe_values.JxW(q_point));
-            }
-
-        iga_handler.distribute_local_to_global(cell_matrix,
-                                               cell_rhs,
-                                               cell,
-                                               bspline_system_matrix,
-                                               bspline_system_rhs,
-                                               bspline_constraints);
+          {
+            error_per_cell[id] +=
+              ((exact_hessians[q_point] - hessians[q_point]).norm() *
+               fe_values.JxW(q_point));
+          }
+        ++id;
       }
-  }
+    return std::sqrt(error_per_cell.l2_norm());
+  };
+
+  convergence_table.add_extra_column("u_H2_seminorm", compute_H2_error);
+
+  convergence_table.error_from_exact(dof_handler,
+                                     bspline_sol_dh,
+                                     exact_solution);
+}
 
 
-  template <int dim>
-  void
-  BiLaplacian<dim>::solve()
-  {
-    std::cout << "   Solving system..." << std::endl;
-
-    ReductionControl         reduction_control(1000, 1e-12, 1e-5);
-    SolverCG<Vector<double>> solver(reduction_control);
-
-    precondition.initialize(bspline_system_matrix);
-
-    solver.solve(bspline_system_matrix,
-                 bspline_solution,
-                 bspline_system_rhs,
-                 precondition);
-    bspline_constraints.distribute(bspline_solution);
-
-    cg_iter = reduction_control.last_step();
-
-    std::cout << "      Error: " << reduction_control.initial_value() << " -> "
-              << reduction_control.last_value() << " in "
-              << reduction_control.last_step() << " CG iterations."
-              << std::endl;
-  }
-
-
-
-  template <int dim>
-  void
-  BiLaplacian<dim>::output_results(const unsigned int iteration)
-  {
-    std::cout << "   Writing graphical output..." << std::endl;
-
-    DataOut<dim> data_out;
-
-    data_out.set_flags(
-      DataOutBase::VtkFlags(std::numeric_limits<double>::min(),
-                            iteration,
-                            true,
-                            DataOutBase::VtkFlags::best_compression,
-                            true));
-
-
-    data_out.attach_dof_handler(dof_handler);
-
-    Vector<double> bspline_sol_dh(dof_handler.n_dofs());
-
-    Vector<double> exact_dh(dof_handler.n_dofs());
-
-    iga_handler.transform_vector_into_fe_space(bspline_sol_dh,
-                                               bspline_solution);
-    AffineConstraints<double> empty_constraints;
-    empty_constraints.close();
-    VectorTools::project(dof_handler,
-                         empty_constraints,
-                         QGauss<dim>(2 * degree + 1),
-                         Solution<dim>(),
-                         exact_dh);
-
-    data_out.add_data_vector(bspline_sol_dh, "u");
-    data_out.add_data_vector(exact_dh, "u_exact");
-
-    data_out.build_patches(degree);
-
-    std::ofstream output_vtu(
-      (std::string("output_") + Utilities::int_to_string(iteration, 3) + ".vtu")
-        .c_str());
-    data_out.write_vtu(output_vtu);
-  }
-
-
-  template <int dim>
-  void
-  BiLaplacian<dim>::compute_error(const unsigned int)
-  {
-    std::cout << "   Computing error..." << std::endl;
-
-    Vector<double> bspline_sol_dh(dof_handler.n_dofs());
-    iga_handler.transform_vector_into_fe_space(bspline_sol_dh,
-                                               bspline_solution);
-
-    // FunctionParser<dim> exact_solution(exact_solution_expression);
-    Solution<dim> exact_solution;
-
-    auto compute_H2_error = [&]() {
-      const QGauss<dim> quadrature_formula(fe.degree + 1);
-      Vector<double>    error_per_cell(triangulation.n_active_cells());
-
-      FEValues<dim> fe_values( // mappingfe,
-        fe,
-        quadrature_formula,
-        update_values | update_hessians | update_quadrature_points |
-          update_JxW_values);
-
-      FEValuesExtractors::Scalar scalar(0);
-      const unsigned int         n_q_points = quadrature_formula.size();
-
-      std::vector<SymmetricTensor<2, dim>> exact_hessians(n_q_points);
-      std::vector<Tensor<2, dim>>          hessians(n_q_points);
-      unsigned int                         id = 0;
-      for (auto cell : dof_handler.active_cell_iterators())
-        {
-          fe_values.reinit(cell);
-          fe_values[scalar].get_function_hessians(bspline_sol_dh, hessians);
-          exact_solution.hessian_list(fe_values.get_quadrature_points(),
-                                      exact_hessians);
-
-          for (unsigned int q_point = 0; q_point < n_q_points; ++q_point)
-            {
-              error_per_cell[id] +=
-                ((exact_hessians[q_point] - hessians[q_point]).norm() *
-                 fe_values.JxW(q_point));
-            }
-          ++id;
-        }
-      return std::sqrt(error_per_cell.l2_norm());
-    };
-
-    convergence_table.add_extra_column("u_H2_seminorm", compute_H2_error);
-
-    convergence_table.error_from_exact(dof_handler,
-                                       bspline_sol_dh,
-                                       exact_solution);
-  }
-
-
-  template <int dim>
-  void
-  BiLaplacian<dim>::run(unsigned int cycle)
-  {
-    make_grid();
-    setup_system();
-    assemble_system();
-    solve();
-    output_results(cycle);
-    compute_error(cycle);
-  }
-} // namespace Step41
+template <int dim>
+void
+BiLaplacian<dim>::run(unsigned int cycle)
+{
+  make_grid();
+  setup_system();
+  assemble_system();
+  solve();
+  output_results(cycle);
+  compute_error(cycle);
+}
 
 
 int
 main(int argc, char *argv[])
 {
   using namespace dealii;
-  using namespace Step41;
 
   Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv);
   try

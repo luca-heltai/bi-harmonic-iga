@@ -1,0 +1,22 @@
+name: GitHub CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  debug:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Build debug
+      run: |
+         .scripts/dr.sh "rm -rf build_linux_debug"
+         .scripts/dr.sh "mkdir build_linux_debug; cd build_linux_debug; cmake .. -GNinja -DCMAKE_BUILD_TYPE=Debug; ninja"
+    - name: GTest debug
+      run: |
+         .scripts/dr.sh "cd build_linux_debug; ./tests/bi-harmonic_test.g "

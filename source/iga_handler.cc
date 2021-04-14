@@ -8,6 +8,7 @@
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/fe/fe_bernstein.h>
+#include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/fe_tools.h>
 #include <deal.II/fe/fe_values.h>
@@ -214,8 +215,7 @@ IgaHandler<dim, spacedim>::IgaHandler(
   std::vector<unsigned int> col_order(Utilities::fixed_power<dim>(degree + 1));
   std::vector<unsigned int> row_order(Utilities::fixed_power<dim>(degree + 1));
 
-  const FiniteElementData<dim> fe_data(dpo, 1, degree);
-  FETools::hierarchic_to_lexicographic_numbering(fe_data, col_order);
+  col_order = FETools::hierarchic_to_lexicographic_numbering<dim>(degree);
 
   for (unsigned int i = 0; i < row_order.size(); ++i)
     row_order[i] = i;
@@ -507,7 +507,7 @@ IgaHandler<dim, spacedim>::project_boundary_values(
 {
   // Fake boundary values set to 1
   std::map<types::boundary_id, const Function<spacedim> *> fake_boundary;
-  ConstantFunction<spacedim> boundary_funct_fake(1);
+  Functions::ConstantFunction<spacedim> boundary_funct_fake(1);
   fake_boundary[0] = &boundary_funct_fake;
 
   std::map<types::global_dof_index, double> fake_boundary_values;
