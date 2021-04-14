@@ -81,7 +81,7 @@ n_dofs(const std::vector<std::vector<double>> &      p,
   for (unsigned int i = 0; i < p.size(); ++i)
     n *= n_dofs[i];
   return n;
-};
+}
 
 
 void
@@ -272,7 +272,7 @@ IgaHandler<dim, spacedim>::n_cells(
   for (unsigned int i = 0; i < p.size(); ++i)
     n *= (p[i].size() - 1);
   return n;
-};
+}
 
 
 
